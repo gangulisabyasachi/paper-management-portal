@@ -1,0 +1,25 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+
+# next.js
+/.next/
+/out/
+/build
+
+# env files
+.env*
+.env.local
+
+# future plan & internal credentials (internal only)
+future-plan.md
+user.md
+
+# uploaded manuscripts
+/uploads
+
+# logs & OS
+*.log
+.DS_Store
+._*
