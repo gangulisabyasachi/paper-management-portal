@@ -16,8 +16,17 @@ const FileSubSchema = new mongoose.Schema(
     version: { type: Number },
     filename: { type: String },
     originalName: { type: String },
+    mimeType: { type: String },
     uploadedAt: { type: Date, default: Date.now },
     size: { type: Number },
+    storage: {
+      type: String,
+      enum: ['cloudinary', 'gridfs', 'local'],
+      default: 'cloudinary',
+    },
+    url: { type: String },
+    publicId: { type: String },
+    gridFsId: { type: mongoose.Schema.Types.ObjectId },
   },
   { _id: false }
 );

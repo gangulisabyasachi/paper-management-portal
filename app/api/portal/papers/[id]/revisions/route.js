@@ -1,12 +1,20 @@
 import { NextResponse } from 'next/server';
-import path from 'path';
-import fs from 'fs/promises';
 import { connectDB } from '@/lib/db';
 import Paper from '@/models/Paper';
 import { verifyPortalSession } from '@/lib/portal/session';
 import logActivity from '@/lib/portal/activityLogger';
+import { uploadBufferToGridFS } from '@/lib/portal/gridfs';
 
-const MAX_FILE_SIZE = 15 * 1024 * 1024; // 15 MB
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+
+function isAcceptedDocName(name = '') {
+  const lower = name.toLowerCase();
+  return (
+    lower.endsWith('.docx') ||
+    lower.endsWith('.doc') ||
+    lower.endsWith('.doc.zip')
+  );
+}
 
 export async function POST(request, { params }) {
   try {
@@ -37,39 +45,90 @@ export async function POST(request, { params }) {
       );
     }
 
-    const formData = await request.formData();
-    const file = formData.get('file');
-
-    if (!file || typeof file === 'string' || !file.name?.toLowerCase().endsWith('.pdf')) {
-      return NextResponse.json(
-        { error: 'Please upload a valid PDF file.' },
-        { status: 400 }
-      );
-    }
-
-    if (file.size > MAX_FILE_SIZE) {
-      return NextResponse.json(
-        { error: 'Revised PDF must be 15 MB or smaller.' },
-        { status: 400 }
-      );
-    }
-
+    const contentType = request.headers.get('content-type') || '';
     const newVersion = (paper.currentVersion || 1) + 1;
-    const filename = `${paper.paperId}_v${newVersion}.pdf`;
+    let fileEntry;
 
-    const uploadDir = path.join(process.cwd(), 'uploads', 'papers');
-    await fs.mkdir(uploadDir, { recursive: true });
-    const buffer = Buffer.from(await file.arrayBuffer());
-    await fs.writeFile(path.join(uploadDir, filename), buffer);
+    if (contentType.includes('application/json')) {
+      const body = await request.json();
+      const uploadedFileMeta = body?.uploadedFile;
+      if (
+        !uploadedFileMeta ||
+        !isAcceptedDocName(uploadedFileMeta.filename || uploadedFileMeta.originalName)
+      ) {
+        return NextResponse.json(
+          { error: 'Please upload a valid .doc or .docx file.' },
+          { status: 400 }
+        );
+      }
+      if (Number(uploadedFileMeta.size) > MAX_FILE_SIZE) {
+        return NextResponse.json(
+          { error: 'Revised manuscript must be 10 MB or smaller.' },
+          { status: 400 }
+        );
+      }
+
+      const sourceName =
+        uploadedFileMeta.filename || uploadedFileMeta.originalName || 'revision.docx';
+      const ext = sourceName.toLowerCase().endsWith('.doc.zip')
+        ? '.doc.zip'
+        : sourceName.toLowerCase().endsWith('.docx')
+          ? '.docx'
+          : '.doc';
+
+      fileEntry = {
+        version: newVersion,
+        filename: `${paper.paperId}_v${newVersion}${ext}`,
+        originalName: uploadedFileMeta.originalName || sourceName,
+        mimeType: uploadedFileMeta.mimeType,
+        uploadedAt: new Date(),
+        size: Number(uploadedFileMeta.size) || 0,
+        storage: uploadedFileMeta.storage || 'cloudinary',
+        url: uploadedFileMeta.url,
+        publicId: uploadedFileMeta.publicId,
+        gridFsId: uploadedFileMeta.gridFsId,
+      };
+    } else {
+      const formData = await request.formData();
+      const file = formData.get('file');
+
+      if (!file || typeof file === 'string' || !isAcceptedDocName(file.name)) {
+        return NextResponse.json(
+          { error: 'Please upload a valid .doc or .docx file.' },
+          { status: 400 }
+        );
+      }
+
+      if (file.size > MAX_FILE_SIZE) {
+        return NextResponse.json(
+          { error: 'Revised manuscript must be 10 MB or smaller.' },
+          { status: 400 }
+        );
+      }
+
+      const ext = file.name.toLowerCase().endsWith('.docx') ? '.docx' : '.doc';
+      const filename = `${paper.paperId}_v${newVersion}${ext}`;
+      const mimeType =
+        ext === '.docx'
+          ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+          : 'application/msword';
+      const buffer = Buffer.from(await file.arrayBuffer());
+      const gridFsId = await uploadBufferToGridFS(buffer, filename, mimeType);
+
+      fileEntry = {
+        version: newVersion,
+        filename,
+        originalName: file.name,
+        mimeType,
+        uploadedAt: new Date(),
+        size: file.size,
+        storage: 'gridfs',
+        gridFsId,
+      };
+    }
 
     paper.currentVersion = newVersion;
-    paper.files.push({
-      version: newVersion,
-      filename,
-      originalName: file.name,
-      uploadedAt: new Date(),
-      size: file.size,
-    });
+    paper.files.push(fileEntry);
     paper.status = 'revised';
     await paper.save();
 
@@ -81,7 +140,8 @@ export async function POST(request, { params }) {
       details: {
         paperId: paper.paperId,
         version: newVersion,
-        filename,
+        filename: fileEntry.filename,
+        storage: fileEntry.storage,
       },
     });
 

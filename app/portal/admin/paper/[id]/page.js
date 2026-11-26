@@ -177,7 +177,7 @@ export default function AdminPaperDetailPage({ params }) {
           rel="noopener noreferrer"
           className="portal-btn portal-btn-primary portal-btn-sm"
         >
-          Download Latest PDF (v{paper.currentVersion})
+          Download Manuscript (v{paper.currentVersion})
         </a>
       </div>
 
@@ -358,7 +358,7 @@ export default function AdminPaperDetailPage({ params }) {
                   <div style={{ fontSize: '0.76rem', color: '#64748b' }}>{f.originalName}</div>
                 </div>
                 <a href={`/api/portal/papers/${paper._id}/download?version=${f.version}`} target="_blank" rel="noopener noreferrer" className="portal-btn portal-btn-outline portal-btn-sm">
-                  View PDF
+                  Download
                 </a>
               </div>
             ))}

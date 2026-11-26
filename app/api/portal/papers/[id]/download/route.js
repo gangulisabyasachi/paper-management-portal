@@ -6,6 +6,25 @@ import Paper from '@/models/Paper';
 import Review from '@/models/Review';
 import { verifyPortalSession } from '@/lib/portal/session';
 import { canManagePaper } from '@/lib/portal/permissions';
+import { readBufferFromGridFS } from '@/lib/portal/gridfs';
+
+function resolveContentType(fileRecord) {
+  if (fileRecord?.mimeType) return fileRecord.mimeType;
+  const lower = (fileRecord?.filename || fileRecord?.originalName || '').toLowerCase();
+  if (lower.endsWith('.docx')) {
+    return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  }
+  if (lower.endsWith('.doc')) {
+    return 'application/msword';
+  }
+  if (lower.endsWith('.zip')) {
+    return 'application/zip';
+  }
+  if (lower.endsWith('.pdf')) {
+    return 'application/pdf';
+  }
+  return 'application/octet-stream';
+}
 
 export async function GET(request, { params }) {
   try {
@@ -45,19 +64,37 @@ export async function GET(request, { params }) {
       (paper.files || []).find((f) => f.version === targetVersion) ||
       (paper.files || [])[paper.files.length - 1];
 
-    if (!fileRecord?.filename) {
+    if (!fileRecord) {
       return NextResponse.json({ error: 'Manuscript file not found.' }, { status: 404 });
     }
 
-    const safeName = path.basename(fileRecord.filename);
-    const filePath = path.join(process.cwd(), 'uploads', 'papers', safeName);
-    const fileBuffer = await fs.readFile(filePath);
+    const safeName = path.basename(fileRecord.filename || fileRecord.originalName || 'manuscript.docx');
+    const contentType = resolveContentType(fileRecord);
+    let fileBuffer;
+
+    if (fileRecord.storage === 'cloudinary' && fileRecord.url) {
+      const cloudRes = await fetch(fileRecord.url);
+      if (!cloudRes.ok) {
+        return NextResponse.json(
+          { error: 'Failed to retrieve file from Cloudinary.' },
+          { status: 502 }
+        );
+      }
+      fileBuffer = Buffer.from(await cloudRes.arrayBuffer());
+    } else if (fileRecord.storage === 'gridfs' && fileRecord.gridFsId) {
+      fileBuffer = await readBufferFromGridFS(fileRecord.gridFsId);
+    } else if (fileRecord.filename) {
+      const filePath = path.join(process.cwd(), 'uploads', 'papers', safeName);
+      fileBuffer = await fs.readFile(filePath);
+    } else {
+      return NextResponse.json({ error: 'Manuscript file reference missing.' }, { status: 404 });
+    }
 
     return new NextResponse(fileBuffer, {
       status: 200,
       headers: {
-        'Content-Type': 'application/pdf',
-        'Content-Disposition': `inline; filename="${safeName}"`,
+        'Content-Type': contentType,
+        'Content-Disposition': `attachment; filename="${safeName}"`,
       },
     });
   } catch (error) {

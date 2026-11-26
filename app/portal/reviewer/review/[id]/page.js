@@ -76,7 +76,7 @@ export default function ReviewerPaperReviewPage({ params }) {
             rel="noopener noreferrer"
             className="portal-btn portal-btn-primary portal-btn-sm"
           >
-            Download Manuscript PDF (v{paper.currentVersion})
+            Download Manuscript (v{paper.currentVersion})
           </a>
         </div>
       </div>
@@ -120,7 +120,7 @@ export default function ReviewerPaperReviewPage({ params }) {
                   rel="noopener noreferrer"
                   className="portal-btn portal-btn-outline portal-btn-sm"
                 >
-                  Version {f.version} PDF
+                  Version {f.version}
                 </a>
               ))}
             </div>

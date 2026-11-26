@@ -1,11 +1,15 @@
 'use client';
 
 import { useRef, useState } from 'react';
+import {
+  isAllowedManuscriptFile,
+  RECOMMENDED_BYTES,
+  MAX_BYTES,
+} from '@/lib/portal/clientUpload';
 
 export default function FileUpload({
   onFileSelect,
-  accept = '.pdf',
-  maxSize = 15 * 1024 * 1024,
+  accept = '.doc,.docx',
   currentFile = null,
 }) {
   const inputRef = useRef(null);
@@ -16,14 +20,8 @@ export default function FileUpload({
     setError('');
     if (!file) return;
 
-    if (accept === '.pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-      setError('Only PDF files (.pdf) are allowed.');
-      return;
-    }
-
-    if (file.size > maxSize) {
-      const mb = Math.round(maxSize / (1024 * 1024));
-      setError(`File exceeds the ${mb} MB limit.`);
+    if (!isAllowedManuscriptFile(file)) {
+      setError('Only Microsoft Word files (.doc or .docx) are allowed.');
       return;
     }
 
@@ -35,6 +33,9 @@ export default function FileUpload({
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   };
+
+  const isAboveRecommended = currentFile && currentFile.size > RECOMMENDED_BYTES && currentFile.size <= MAX_BYTES;
+  const willAutoCompress = currentFile && currentFile.size > MAX_BYTES;
 
   return (
     <div>
@@ -84,22 +85,49 @@ export default function FileUpload({
               <p style={{ fontWeight: 700, color: '#0f172a', fontSize: '0.95rem' }}>
                 {currentFile.name}
               </p>
-              <p style={{ fontSize: '0.8rem', color: '#059669', marginTop: '0.2rem' }}>
-                {formatBytes(currentFile.size)} • Ready to upload (click to replace)
+              <p
+                style={{
+                  fontSize: '0.8rem',
+                  color: willAutoCompress ? '#b45309' : '#059669',
+                  marginTop: '0.2rem',
+                  fontWeight: 600,
+                }}
+              >
+                {formatBytes(currentFile.size)} •{' '}
+                {willAutoCompress
+                  ? 'Exceeds 10 MB — will auto-compress before submitting'
+                  : 'Ready to upload (click to replace)'}
               </p>
             </div>
           ) : (
             <div>
               <p style={{ fontWeight: 600, color: '#0f172a', fontSize: '0.94rem' }}>
-                Click to upload or drag & drop manuscript PDF
+                Click to upload or drag & drop manuscript (.docx or .doc)
               </p>
               <p style={{ fontSize: '0.8rem', color: '#64748b', marginTop: '0.2rem' }}>
-                PDF only, max {Math.round(maxSize / (1024 * 1024))} MB
+                Recommended under 5 MB • Files over 10 MB are auto-compressed before upload
               </p>
             </div>
           )}
         </div>
       </div>
+
+      {isAboveRecommended && (
+        <div className="portal-alert warning" style={{ marginTop: '0.65rem' }}>
+          <span>
+            Suggested max size is 5 MB (your file is {formatBytes(currentFile.size)}, still accepted up to 10 MB).
+          </span>
+        </div>
+      )}
+
+      {willAutoCompress && (
+        <div className="portal-alert info" style={{ marginTop: '0.65rem' }}>
+          <span>
+            This file exceeds 10 MB ({formatBytes(currentFile.size)}). It will be automatically compressed in your browser before uploading.
+          </span>
+        </div>
+      )}
+
       {error && (
         <div className="portal-alert error" style={{ marginTop: '0.65rem' }}>
           <span>{error}</span>

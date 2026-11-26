@@ -7,6 +7,8 @@ import ActivityLog from '@/models/ActivityLog';
 import { verifyPortalSession } from '@/lib/portal/session';
 import { canManagePaper } from '@/lib/portal/permissions';
 import logActivity from '@/lib/portal/activityLogger';
+import { deleteCloudinaryRaw } from '@/lib/portal/cloudinary';
+import { deleteFromGridFS } from '@/lib/portal/gridfs';
 
 export async function GET(request, { params }) {
   try {
@@ -199,6 +201,14 @@ export async function DELETE(request, { params }) {
     const paper = await Paper.findById(id);
     if (!paper) {
       return NextResponse.json({ error: 'Paper not found.' }, { status: 404 });
+    }
+
+    for (const f of paper.files || []) {
+      if (f.storage === 'cloudinary' && f.publicId) {
+        await deleteCloudinaryRaw(f.publicId);
+      } else if (f.storage === 'gridfs' && f.gridFsId) {
+        await deleteFromGridFS(f.gridFsId);
+      }
     }
 
     await Review.deleteMany({ paper: id });

@@ -152,7 +152,7 @@ export default function EditorPaperDetailPage({ params }) {
           rel="noopener noreferrer"
           className="portal-btn portal-btn-primary portal-btn-sm"
         >
-          Download Latest PDF (v{paper.currentVersion})
+          Download Manuscript (v{paper.currentVersion})
         </a>
       </div>
 

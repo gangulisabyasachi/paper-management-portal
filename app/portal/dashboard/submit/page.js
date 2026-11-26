@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import FileUpload from '../../components/FileUpload';
+import { uploadManuscriptFile } from '@/lib/portal/clientUpload';
 
 const EMPTY_COAUTHOR = {
   name: '',
@@ -30,6 +31,7 @@ export default function SubmitPaperPage() {
   const [coAuthors, setCoAuthors] = useState([]);
   const [file, setFile] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -144,24 +146,28 @@ export default function SubmitPaperPage() {
     }
 
     if (!file) {
-      setError('Please attach your manuscript PDF file.');
+      setError('Please attach your manuscript file (.doc or .docx).');
       return;
     }
 
     setSubmitting(true);
+    setUploadStatus('Starting upload...');
     try {
-      const fd = new FormData();
-      fd.append('title', title.trim());
-      fd.append('abstract', abstract.trim());
-      fd.append('keywords', keywords);
-      fd.append('targetIssueId', targetIssueId);
-      fd.append('mainAuthor', JSON.stringify(mainAuthor));
-      fd.append('coAuthors', JSON.stringify(coAuthors));
-      fd.append('file', file);
+      const uploadedFile = await uploadManuscriptFile(file, setUploadStatus);
 
+      setUploadStatus('Finalizing submission...');
       const res = await fetch('/api/portal/papers', {
         method: 'POST',
-        body: fd,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: title.trim(),
+          abstract: abstract.trim(),
+          keywords,
+          targetIssueId,
+          mainAuthor,
+          coAuthors,
+          uploadedFile,
+        }),
       });
       const data = await res.json();
 
@@ -170,10 +176,11 @@ export default function SubmitPaperPage() {
       } else {
         router.push(`/portal/dashboard/paper/${data.paper._id}?submitted=1`);
       }
-    } catch {
-      setError('Network error while submitting manuscript.');
+    } catch (err) {
+      setError(err?.message || 'Network error while submitting manuscript.');
     } finally {
       setSubmitting(false);
+      setUploadStatus('');
     }
   };
 
@@ -483,18 +490,23 @@ export default function SubmitPaperPage() {
           )}
         </div>
 
-        {/* Section 5: PDF Upload */}
+        {/* Section 5: Manuscript Upload */}
         <div className="portal-card">
           <h2 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '0.35rem' }}>
-            5. Upload Manuscript PDF *
+            5. Upload Manuscript (.doc / .docx) *
           </h2>
           <p style={{ fontSize: '0.84rem', color: '#64748b', marginBottom: '1rem' }}>
-            Ensure your manuscript is anonymized for double-blinded peer review if applicable.
+            Upload your Word manuscript (.doc or .docx). Recommended max size is 5 MB; files over 10 MB are auto-compressed before submitting.
           </p>
           <FileUpload onFileSelect={setFile} currentFile={file} />
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.85rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '0.85rem' }}>
+          {uploadStatus && (
+            <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#4f46e5' }}>
+              {uploadStatus}
+            </span>
+          )}
           <button
             type="button"
             onClick={() => router.push('/portal/dashboard')}
@@ -507,7 +519,7 @@ export default function SubmitPaperPage() {
             className="portal-btn portal-btn-primary"
             disabled={submitting || issues.length === 0}
           >
-            {submitting ? 'Submitting Manuscript...' : 'Submit Manuscript'}
+            {submitting ? uploadStatus || 'Submitting...' : 'Submit Manuscript'}
           </button>
         </div>
       </form>

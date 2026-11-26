@@ -6,6 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import StatusBadge from '../../../components/StatusBadge';
 import StatusTracker from '../../../components/StatusTracker';
 import FileUpload from '../../../components/FileUpload';
+import { uploadManuscriptFile } from '@/lib/portal/clientUpload';
 
 export default function SubmitterPaperDetailPage({ params }) {
   const { id } = use(params);
@@ -46,23 +47,26 @@ export default function SubmitterPaperDetailPage({ params }) {
     if (!revisionFile) return;
     setUploadingRevision(true);
     setRevisionMsg('');
+    setError('');
     try {
-      const fd = new FormData();
-      fd.append('file', revisionFile);
+      const uploadedFile = await uploadManuscriptFile(revisionFile, setRevisionMsg);
       const res = await fetch(`/api/portal/papers/${id}/revisions`, {
         method: 'POST',
-        body: fd,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uploadedFile }),
       });
       const data = await res.json();
       if (!res.ok) {
         setError(data.error || 'Failed to upload revision.');
+        setRevisionMsg('');
       } else {
         setRevisionFile(null);
         setRevisionMsg(`Revision v${data.paper.currentVersion} uploaded successfully!`);
         await loadPaper();
       }
-    } catch {
-      setError('Network error while uploading revision.');
+    } catch (err) {
+      setError(err?.message || 'Network error while uploading revision.');
+      setRevisionMsg('');
     } finally {
       setUploadingRevision(false);
     }
@@ -97,7 +101,7 @@ export default function SubmitterPaperDetailPage({ params }) {
           rel="noopener noreferrer"
           className="portal-btn portal-btn-primary portal-btn-sm"
         >
-          Download Latest PDF (v{paper.currentVersion})
+          Download Manuscript (v{paper.currentVersion})
         </a>
       </div>
 
@@ -169,7 +173,7 @@ export default function SubmitterPaperDetailPage({ params }) {
             Upload Revised Manuscript (v{(paper.currentVersion || 1) + 1})
           </h2>
           <p style={{ fontSize: '0.85rem', color: '#64748b', marginBottom: '1rem' }}>
-            Revisions were requested by the editorial team. Please upload your updated PDF below.
+            Revisions were requested by the editorial team. Please upload your updated Word document (.doc or .docx) below.
           </p>
           <FileUpload onFileSelect={setRevisionFile} currentFile={revisionFile} />
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '1rem' }}>
@@ -178,7 +182,7 @@ export default function SubmitterPaperDetailPage({ params }) {
               className="portal-btn portal-btn-primary"
               disabled={!revisionFile || uploadingRevision}
             >
-              {uploadingRevision ? 'Uploading Revision...' : 'Submit Revised PDF'}
+              {uploadingRevision ? 'Uploading Revision...' : 'Submit Revised Manuscript'}
             </button>
           </div>
         </form>
@@ -272,7 +276,7 @@ export default function SubmitterPaperDetailPage({ params }) {
                   rel="noopener noreferrer"
                   className="portal-btn portal-btn-outline portal-btn-sm"
                 >
-                  View PDF
+                  Download
                 </a>
               </div>
             ))}

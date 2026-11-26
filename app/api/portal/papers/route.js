@@ -1,6 +1,4 @@
 import { NextResponse } from 'next/server';
-import path from 'path';
-import fs from 'fs/promises';
 import { headers } from 'next/headers';
 import { connectDB } from '@/lib/db';
 import Paper from '@/models/Paper';
@@ -11,8 +9,18 @@ import { verifyPortalSession } from '@/lib/portal/session';
 import generatePaperId from '@/lib/portal/paperId';
 import { autoAssignReviewers } from '@/lib/portal/autoAssign';
 import logActivity from '@/lib/portal/activityLogger';
+import { uploadBufferToGridFS } from '@/lib/portal/gridfs';
 
-const MAX_FILE_SIZE = 15 * 1024 * 1024; // 15 MB
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+
+function isAcceptedDocName(name = '') {
+  const lower = name.toLowerCase();
+  return (
+    lower.endsWith('.docx') ||
+    lower.endsWith('.doc') ||
+    lower.endsWith('.doc.zip')
+  );
+}
 
 export async function GET(request) {
   try {
@@ -38,7 +46,6 @@ export async function GET(request) {
         .lean();
       query._id = { $in: assigned.map((r) => r.paper) };
     } else if (session.role === 'editor') {
-      // Editors see papers in issues assigned to them, or all if none specifically assigned
       const editorIssues = await JournalIssue.find({
         editorInChief: session.userId,
       })
@@ -69,7 +76,6 @@ export async function GET(request) {
       .sort({ createdAt: -1 })
       .lean();
 
-    // Attach review counts and earliest pending deadline for admin/editor/submitter display
     const paperIds = papers.map((p) => p._id);
     const reviews = await Review.find({ paper: { $in: paperIds } })
       .select('paper status deadline recommendation')
@@ -126,34 +132,77 @@ export async function POST(request) {
       );
     }
 
-    const formData = await request.formData();
-    const title = formData.get('title')?.toString().trim();
-    const abstract = formData.get('abstract')?.toString().trim();
-    const keywordsRaw = formData.get('keywords')?.toString() || '';
-    const mainAuthorRaw = formData.get('mainAuthor')?.toString() || '{}';
-    const coAuthorsRaw = formData.get('coAuthors')?.toString() || '[]';
-    const targetIssueId = formData.get('targetIssueId')?.toString().trim();
-    const file = formData.get('file');
+    const contentType = request.headers.get('content-type') || '';
+    let title = '';
+    let abstract = '';
+    let keywordsRaw = '';
+    let mainAuthorInput = {};
+    let coAuthorsRaw = [];
+    let targetIssueId = '';
+    let uploadedFileMeta = null;
+    let formFile = null;
 
-    if (!title || !abstract || !targetIssueId || !file) {
+    if (contentType.includes('application/json')) {
+      const body = await request.json();
+      title = (body?.title || '').toString().trim();
+      abstract = (body?.abstract || '').toString().trim();
+      keywordsRaw = (body?.keywords || '').toString();
+      mainAuthorInput = body?.mainAuthor || {};
+      coAuthorsRaw = Array.isArray(body?.coAuthors) ? body.coAuthors : [];
+      targetIssueId = (body?.targetIssueId || '').toString().trim();
+      uploadedFileMeta = body?.uploadedFile || null;
+    } else {
+      const formData = await request.formData();
+      title = formData.get('title')?.toString().trim() || '';
+      abstract = formData.get('abstract')?.toString().trim() || '';
+      keywordsRaw = formData.get('keywords')?.toString() || '';
+      try {
+        mainAuthorInput = JSON.parse(formData.get('mainAuthor')?.toString() || '{}') || {};
+      } catch {
+        mainAuthorInput = {};
+      }
+      try {
+        coAuthorsRaw = JSON.parse(formData.get('coAuthors')?.toString() || '[]') || [];
+      } catch {
+        coAuthorsRaw = [];
+      }
+      targetIssueId = formData.get('targetIssueId')?.toString().trim() || '';
+      formFile = formData.get('file');
+    }
+
+    if (!title || !abstract || !targetIssueId || (!uploadedFileMeta && !formFile)) {
       return NextResponse.json(
-        { error: 'Title, abstract, target issue, and manuscript PDF are required.' },
+        { error: 'Title, abstract, target issue, and manuscript (.doc/.docx) are required.' },
         { status: 400 }
       );
     }
 
-    if (typeof file === 'string' || !file.name?.toLowerCase().endsWith('.pdf')) {
-      return NextResponse.json(
-        { error: 'Only PDF manuscript files are accepted.' },
-        { status: 400 }
-      );
-    }
-
-    if (file.size > MAX_FILE_SIZE) {
-      return NextResponse.json(
-        { error: 'Manuscript PDF must be 15 MB or smaller.' },
-        { status: 400 }
-      );
+    if (formFile) {
+      if (typeof formFile === 'string' || !isAcceptedDocName(formFile.name)) {
+        return NextResponse.json(
+          { error: 'Only Word manuscript files (.doc or .docx) are accepted.' },
+          { status: 400 }
+        );
+      }
+      if (formFile.size > MAX_FILE_SIZE) {
+        return NextResponse.json(
+          { error: 'Manuscript file must be 10 MB or smaller.' },
+          { status: 400 }
+        );
+      }
+    } else if (uploadedFileMeta) {
+      if (!isAcceptedDocName(uploadedFileMeta.filename || uploadedFileMeta.originalName)) {
+        return NextResponse.json(
+          { error: 'Only Word manuscript files (.doc or .docx) are accepted.' },
+          { status: 400 }
+        );
+      }
+      if (Number(uploadedFileMeta.size) > MAX_FILE_SIZE) {
+        return NextResponse.json(
+          { error: 'Manuscript file must be 10 MB or smaller.' },
+          { status: 400 }
+        );
+      }
     }
 
     await connectDB();
@@ -185,13 +234,6 @@ export async function POST(request) {
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     const phoneRegex = /^\d{10}$/;
-
-    let mainAuthorInput = {};
-    try {
-      mainAuthorInput = JSON.parse(mainAuthorRaw) || {};
-    } catch {
-      mainAuthorInput = {};
-    }
 
     const mainAuthor = {
       name: (mainAuthorInput.name ?? submitter.name ?? '').toString().trim(),
@@ -229,56 +271,45 @@ export async function POST(request) {
       );
     }
 
-    let coAuthors = [];
-    try {
-      const parsed = JSON.parse(coAuthorsRaw);
-      if (Array.isArray(parsed)) {
-        for (let i = 0; i < parsed.length; i++) {
-          const a = parsed[i] || {};
-          const normalized = {
-            name: (a.name || '').toString().trim(),
-            email: (a.email || '').toString().trim().toLowerCase(),
-            phone: (a.phone || '').toString().replace(/\D/g, '').trim(),
-            academicDesignation: (a.academicDesignation || '').toString().trim(),
-            affiliation: (a.affiliation || '').toString().trim(),
-          };
-          if (
-            !normalized.name ||
-            !normalized.email ||
-            !normalized.phone ||
-            !normalized.academicDesignation ||
-            !normalized.affiliation
-          ) {
-            return NextResponse.json(
-              {
-                error: `Co-Author #${i + 1} requires Name, Email, Phone Number, Academic Designation, and Institution Name.`,
-              },
-              { status: 400 }
-            );
-          }
-          if (!emailRegex.test(normalized.email)) {
-            return NextResponse.json(
-              { error: `Co-Author #${i + 1} has an invalid email address.` },
-              { status: 400 }
-            );
-          }
-          if (!phoneRegex.test(normalized.phone)) {
-            return NextResponse.json(
-              { error: `Co-Author #${i + 1} phone number must be exactly 10 digits.` },
-              { status: 400 }
-            );
-          }
-          coAuthors.push(normalized);
-        }
+    const coAuthors = [];
+    for (let i = 0; i < coAuthorsRaw.length; i++) {
+      const a = coAuthorsRaw[i] || {};
+      const normalized = {
+        name: (a.name || '').toString().trim(),
+        email: (a.email || '').toString().trim().toLowerCase(),
+        phone: (a.phone || '').toString().replace(/\D/g, '').trim(),
+        academicDesignation: (a.academicDesignation || '').toString().trim(),
+        affiliation: (a.affiliation || '').toString().trim(),
+      };
+      if (
+        !normalized.name ||
+        !normalized.email ||
+        !normalized.phone ||
+        !normalized.academicDesignation ||
+        !normalized.affiliation
+      ) {
+        return NextResponse.json(
+          {
+            error: `Co-Author #${i + 1} requires Name, Email, Phone Number, Academic Designation, and Institution Name.`,
+          },
+          { status: 400 }
+        );
       }
-    } catch {
-      return NextResponse.json(
-        { error: 'Invalid co-authors payload.' },
-        { status: 400 }
-      );
+      if (!emailRegex.test(normalized.email)) {
+        return NextResponse.json(
+          { error: `Co-Author #${i + 1} has an invalid email address.` },
+          { status: 400 }
+        );
+      }
+      if (!phoneRegex.test(normalized.phone)) {
+        return NextResponse.json(
+          { error: `Co-Author #${i + 1} phone number must be exactly 10 digits.` },
+          { status: 400 }
+        );
+      }
+      coAuthors.push(normalized);
     }
 
-    // Persist phone & academicDesignation onto submitter profile for future convenience
     let profileUpdated = false;
     if (!submitter.phone && mainAuthor.phone) {
       submitter.phone = mainAuthor.phone;
@@ -302,12 +333,47 @@ export async function POST(request) {
       .filter(Boolean);
 
     const paperId = await generatePaperId();
-    const filename = `${paperId}_v1.pdf`;
 
-    const uploadDir = path.join(process.cwd(), 'uploads', 'papers');
-    await fs.mkdir(uploadDir, { recursive: true });
-    const buffer = Buffer.from(await file.arrayBuffer());
-    await fs.writeFile(path.join(uploadDir, filename), buffer);
+    let fileEntry;
+    if (uploadedFileMeta) {
+      const sourceName = uploadedFileMeta.filename || uploadedFileMeta.originalName || 'manuscript.docx';
+      const ext = sourceName.toLowerCase().endsWith('.doc.zip')
+        ? '.doc.zip'
+        : sourceName.toLowerCase().endsWith('.docx')
+          ? '.docx'
+          : '.doc';
+      fileEntry = {
+        version: 1,
+        filename: `${paperId}_v1${ext}`,
+        originalName: uploadedFileMeta.originalName || sourceName,
+        mimeType: uploadedFileMeta.mimeType,
+        uploadedAt: new Date(),
+        size: Number(uploadedFileMeta.size) || 0,
+        storage: uploadedFileMeta.storage || 'cloudinary',
+        url: uploadedFileMeta.url,
+        publicId: uploadedFileMeta.publicId,
+        gridFsId: uploadedFileMeta.gridFsId,
+      };
+    } else {
+      const ext = formFile.name.toLowerCase().endsWith('.docx') ? '.docx' : '.doc';
+      const filename = `${paperId}_v1${ext}`;
+      const mimeType =
+        ext === '.docx'
+          ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+          : 'application/msword';
+      const buffer = Buffer.from(await formFile.arrayBuffer());
+      const gridFsId = await uploadBufferToGridFS(buffer, filename, mimeType);
+      fileEntry = {
+        version: 1,
+        filename,
+        originalName: formFile.name,
+        mimeType,
+        uploadedAt: new Date(),
+        size: formFile.size,
+        storage: 'gridfs',
+        gridFsId,
+      };
+    }
 
     const authors = [mainAuthor, ...coAuthors];
 
@@ -320,15 +386,7 @@ export async function POST(request) {
       submittedBy: submitter._id,
       targetIssue: issue._id,
       status: 'submitted',
-      files: [
-        {
-          version: 1,
-          filename,
-          originalName: file.name,
-          uploadedAt: new Date(),
-          size: file.size,
-        },
-      ],
+      files: [fileEntry],
       currentVersion: 1,
     });
 
@@ -345,6 +403,7 @@ export async function POST(request) {
         paperId: paper.paperId,
         title: paper.title,
         issue: issue.title || `Vol ${issue.volume} Issue ${issue.issue}`,
+        storage: fileEntry.storage,
       },
       ipAddress,
     });
